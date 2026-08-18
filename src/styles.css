@@ -1,0 +1,1628 @@
+/*
+ * 暗色を基本にした、報道・官庁風の硬質なグリッド。
+ *
+ * 気象庁の震度配色は白背景を前提にした色で、暗色にそのまま載せると
+ * 弱い震度（震度1 #F2F2FF）が白飛びし、強い震度（6強 #A50021）が沈む。
+ * そこで:
+ *   - 震度の色そのものは変えない（配色に忠実であることを優先する）
+ *   - 面ではなく「チップ」として置き、暗い縁で背景から切り離す
+ *   - 文字色は震度ごとに明度で選ぶ（adapters/intensity.ts の SCALE_FG）
+ *   - 地形は彩度を持たない灰にして、画面の中で色を持つのは震度だけにする
+ */
+
+/*
+ * 欧文と数字は Montserrat。日本語は端末のゴシックに落ちる
+ * （フォント指定の順序で、字ごとに切り替わる）。
+ * CDNは使わず同梱する。オフラインで起動することが条件。
+ *
+ * Montserrat / SIL Open Font License 1.1。
+ * 直立は可変フォント1本（wght 100-900、35KB）で全ウェイトを賄う。
+ * 斜体は**本物のイタリック体**（傾き -11.3°、数字も収録）を別に持つ。
+ * 斜体を持たないフォントだとブラウザが機械的に傾けるだけで字形が崩れる。
+ * どちらも tabular figures（tnum）対応なので、等幅の代わりに使える。
+ */
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/montserrat.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Montserrat";
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("./assets/montserrat-italic.woff2") format("woff2");
+}
+
+/*
+ * 日本語は Noto Sans JP（SIL Open Font License 1.1）。端末任せだと環境で
+ * 見た目が変わるので同梱する。
+ *
+ * 全グリフだと4.2MBあるので、**このアプリが出す文字だけ**に絞ってある
+ * （観測点名・市町村名・区域名・都道府県名・UIの文言＝実測1630文字、610KB）。
+ * 作り直しは tools/build-jp-font.py。
+ *
+ * 未知の文字（新しい観測点名など）が来たら、次の候補（端末のゴシック）に
+ * 字ごとに落ちる。豆腐にはならない。
+ */
+@font-face {
+  font-family: "Noto Sans JP Subset";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("./assets/notosansjp-subset.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0c0e11;
+  --panel: #14171c;
+  --panel-2: #1a1e24;
+  /*
+   * 文字の明るさは3段。全部白にすると重み付けが平らになるので段は残すが、
+   * どの段も 11px で読める明るさにする（背景 #14171c 上のコントラスト比）。
+   *   ink      14.9:1
+   *   ink-weak 10.7:1
+   *   ink-faint 6.9:1  ← 以前は 3.7:1 で、小さい文字には暗すぎた
+   */
+  --ink: #e8eaed;
+  --ink-weak: #c2c8d0;
+  --ink-faint: #99a1ab;
+  --rule: #2a2f37;
+  --rule-strong: #3a414b;
+
+  /* 地形。彩度を持たせない */
+  --land: #262b33;
+  --land-line: #454c57;
+  --sea: #0f1216;
+
+  --alert: #ffd400;
+  --alert-ink: #14161a;
+  --bad: #ff5a4d;
+  --warn: #ffb020;
+  --ok: #3ddc84;
+
+  /*
+   * 欧文・数字は Montserrat、日本語は同梱の Noto Sans JP。
+   * 絞った字種の外は端末のゴシックに落ちる（字ごとの後退）。
+   */
+  --font: "Montserrat", "Noto Sans JP Subset", "Hiragino Kaku Gothic ProN",
+    "Noto Sans JP", "Yu Gothic", system-ui, sans-serif;
+  /* 桁を揃えたい欄も同じフォント。等幅の代わりに tabular figures を使う */
+  --mono: "Montserrat", "Noto Sans JP Subset", "Hiragino Kaku Gothic ProN",
+    monospace;
+  --num: "Montserrat", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/*
+ * hidden 属性を確実に効かせる。
+ * ブラウザ既定の [hidden]{display:none} は作者側の display 指定に負けるので、
+ * .panel{display:flex} のような要素は hidden にしても消えない。
+ */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  /* 1画面完結。ページはスクロールさせない */
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  /* 時刻や座標の桁が揃うように。日本語には影響しない */
+  font-variant-numeric: tabular-nums;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.app {
+  display: grid;
+  /* 帯もヘッダも持たない。本体だけ */
+  grid-template-rows: 1fr;
+  height: 100vh;
+  position: relative;
+}
+
+/*
+ * 項目を横に並べる欄。区切りに文字（「/」など）は使わず、間隔で分ける。
+ * 文字で区切ると、値そのものと区切りの見分けに一手間かかる。
+ */
+.eew__scale,
+.eew__report,
+.row__meta,
+.estimate__note,
+.compact__fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+
+/* ---- 震度の表記 ---- */
+
+/*
+ * 数字と符号を分けて組む。漢字（弱／強）を混ぜると数字と大きさが揃わない。
+ * 数字も符号も斜体。符号はさらに小さく、少し上に置く。
+ */
+.int,
+.eew__intensity-value {
+  display: inline-flex;
+  align-items: flex-start;
+  font-family: var(--num);
+  font-weight: 700;
+  font-style: italic;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.int__num {
+  line-height: 1;
+}
+
+.int__mod {
+  font-size: 0.6em;
+  line-height: 1;
+  margin-left: 0.06em;
+  /* 数字の真横ではなく少し上に置く */
+  margin-top: 0.04em;
+}
+
+.int__note {
+  font-family: var(--font);
+  font-style: normal;
+  font-size: 0.42em;
+  font-weight: 700;
+  align-self: flex-end;
+  margin-left: 0.15em;
+  padding-bottom: 0.12em;
+}
+
+/* ---- EEWの枠（地図の左上に重ねる。受信中だけ出る） ---- */
+
+/*
+ * 列にしない。列にすると受信のたびに地図の幅が変わり、再投影で震源の位置が
+ * 画面上で飛ぶ。重ねれば地図の大きさは変わらない。
+ *
+ * **高さは伸ばし放題にしない。** 対象地域が多いと画面の下まで届いてしまうので、
+ * 上限を決めて枠の中でスクロールさせる（下中央のHUDと重ならない高さ）。
+ */
+.eew-overlay {
+  display: none;
+  position: absolute;
+  left: 12px;
+  top: 12px;
+  width: 360px;
+  max-height: calc(100% - 150px);
+  overflow-y: auto;
+  z-index: 2;
+  background: var(--panel);
+  border: 1px solid var(--rule-strong);
+  /* 地図の上に浮いていることが分かる程度の影 */
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.app--eew .eew-overlay {
+  display: block;
+}
+
+.eew {
+  --pad-l: 14px;
+  position: relative;
+  padding: 14px 14px 14px var(--pad-l);
+  border-bottom: 1px solid var(--rule);
+}
+
+/*
+ * 警報は予報より緊迫して見えるようにする。
+ * ハザードストライプは**左端に縦**。横帯にすると、津波の帯・震度の色面と
+ * 色の面が縦に3つ積み、どれが緊急度を表しているのか読めなくなる。
+ * 縦なら色の面が横に並び、増えても読み筋が乱れない。
+ */
+.eew--warn {
+  --pad-l: 26px;
+  background: #1e1214;
+  box-shadow: inset 0 0 0 1px #5a1a1a;
+}
+
+.eew__hazard {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 12px;
+  /* 津波の帯もカードの端まで伸びるので、その上を通す（帯で途切れて見せない） */
+  z-index: 1;
+  background: repeating-linear-gradient(
+    -45deg,
+    #ff2800 0 10px,
+    #ffffff 10px 20px
+  );
+}
+
+.eew--warn .eew__title {
+  color: #ff6b5c;
+}
+
+/* 津波が発表されている間、どのEEWのカードにも載せる帯 */
+.eew__tsunami {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  /* カードの上端いっぱいから始める（上に地の色が残ると帯が浮いて見える） */
+  margin: -14px -14px 12px calc(-1 * var(--pad-l));
+  padding: 8px 14px 8px var(--pad-l);
+  background: var(--rule-strong);
+  color: var(--ink);
+}
+
+.eew__tsunami--MajorWarning {
+  background: #c800ff;
+  color: #ffffff;
+}
+
+.eew__tsunami--Warning {
+  background: #ff2800;
+  color: #ffffff;
+}
+
+.eew__tsunami--Watch {
+  background: #faf500;
+  color: #14161a;
+}
+
+.eew__tsunami-text {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.eew__tsunami-grade {
+  font-size: 14px;
+  font-weight: 700;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+/*
+ * 2件目以降（余震などの連続）は控えめにする。主役は最新の1件。
+ * 透過はかけない。**震度の色は規格色なので、薄めると別の階級に見える。**
+ * 落とすのは文字と数字の大きさだけ。
+ */
+.eew--secondary {
+  color: var(--ink-weak);
+}
+
+/*
+ * 取消。震源名を大きく出すのはやめ（eew.ts 側）、カード全体を落として
+ * 通常の報と見分けが付くようにする。取消なのに白い太字が残っていると、
+ * パッと見でまだ有効な報に見える。
+ */
+.eew--cancel {
+  color: var(--ink-weak);
+  background: var(--panel-2);
+}
+
+.eew--cancel .eew__title {
+  color: var(--ink-weak);
+}
+
+/*
+ * 見出し。左に全体の最大予測震度、右にこの地点。
+ * 同じ形のバッジが並ぶので、どちらにも名前を付ける。
+ */
+.eew__head {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* 「5弱以上」のように添え字が付くと横に伸びるので、縮むだけにする */
+.eew__max {
+  flex: 1 1 auto;
+  min-width: 118px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* バッジに付ける名前。この地点の枠の見出しと同じ組み */
+.eew__label,
+.estimate__title {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  font-weight: 700;
+  color: var(--ink-faint);
+}
+
+.eew__intensity {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px 6px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+}
+
+.eew__intensity-value {
+  font-size: 72px;
+}
+
+/* 余震の段は小さく。solo の指定より詳細度を高くしてある */
+.eew--secondary .eew__head .eew__intensity-value {
+  font-size: 34px;
+}
+
+.eew--secondary .eew__hypo {
+  font-size: 17px;
+}
+
+.eew__intensity--cancel {
+  background: var(--panel-2);
+  color: var(--ink-weak);
+  border-color: var(--rule-strong);
+  font-size: 26px;
+  font-weight: 700;
+  padding: 12px 8px;
+}
+
+.eew__title {
+  margin: 0 0 2px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink-weak);
+}
+
+/* 震源名。タイトルより大きいが、見出しの数字とは競合させない */
+.eew__hypo {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.eew__scale {
+  margin-top: 2px;
+  font-size: 16px;
+  color: var(--ink-weak);
+}
+
+.eew__report {
+  margin-top: 2px;
+  font-size: 14px;
+  color: var(--ink-faint);
+}
+
+/*
+ * 状態の印。「最終報」＝これ以上更新されない、は報番号より重い情報なので、
+ * 薄い字に混ぜず、枠を付けて分ける。
+ */
+.eew__flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 6px;
+}
+
+/* 枠線だと押せるもの（設定・全域）と見た目が同じになるので、地を塗る */
+.eew__flag {
+  padding: 2px 8px;
+  background: var(--rule-strong);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+}
+
+.eew__area-title {
+  margin: 10px 0 4px;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  color: var(--ink-faint);
+  font-weight: 700;
+  border-top: 1px solid var(--rule);
+  padding-top: 8px;
+}
+
+.eew__areas {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.eew__area {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 6px;
+  padding: 3px 0;
+  align-items: start;
+}
+
+.eew__area-grade {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  font-size: 19px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+}
+
+/*
+ * 地名は1つずつ独立した塊にする。読点でつなぐと、添えた到達時刻が
+ * 地名の一部に見える。並びは到達の早い順（eew.ts 側で並べ替える）。
+ */
+.eew__area-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.eew__area-name {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.eew__area-at {
+  font-family: var(--num);
+  font-size: 13px;
+  color: var(--ink-weak);
+}
+
+/* ---- この地点の到達予測と推定震度（地図の下・中央のHUD） ---- */
+
+/*
+ * **地図の下中央に置く。** 地図を見ているときに視線が置かれる場所で、
+ * 秒で動く値をここに出す。カードの中（左上）に入れていたときは、
+ * 全国の最大予測震度と同じ形のバッジが隣に並んで、どちらがどこの震度か
+ * 分からなかった。場所で分け、それぞれに名前を付ける。
+ *
+ * 地図に重なるので、地の色は不透明にする（半透明にすると地形や円が
+ * 数字に透けて、いちばん読ませたい値が読みにくい）。
+ */
+.hud {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 2;
+  /* 出ていないときに地図のクリック（現在地の指定）を邪魔しない */
+  pointer-events: none;
+}
+
+/*
+ * 気象庁の発表ではなく自前の計算。
+ * 横一列に組む（縦に積むと下端から高く伸びて地図を隠す）。
+ */
+.estimate {
+  display: flex;
+  /* 見出しは数字の足元に付ける（縦中央にすると値から離れて見える） */
+  align-items: flex-end;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--panel);
+  border: 1px solid var(--rule-strong);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.estimate__title {
+  margin: 0 0 4px;
+  /* 横一列を保つ。縮ませると「こ…」まで削られる */
+  flex: none;
+  /* 自分で付けた地点名が長くても、折り返して縦に伸ばさない */
+  max-width: 12ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.estimate__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 4px;
+}
+
+.estimate__value {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  height: 34px;
+  font-size: 25px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+}
+
+.estimate__note {
+  font-size: 13px;
+  color: var(--ink-weak);
+  line-height: 1.25;
+  min-width: 0;
+  /* HUDは横一列。折り返して背が高くなると地図を隠す */
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.estimate__none {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-faint);
+  /* 理由の文（「深さ150km超」など）を縦に折り返さない。HUDは横一列 */
+  white-space: nowrap;
+}
+
+/*
+ * 主要動の到達カウントダウン。**このカードで一番大きい文字**。
+ * 秒で価値が消える唯一の値なので、最初に視線が落ちる位置と大きさを与える。
+ *
+ * **状態が変わっても枠の大きさを変えない。** 到達の前後で高さが動くと、
+ * 隣の震度も下の行も連れて動いて、画面の統一感が崩れる。
+ * そのために:
+ *   - 見出し（主要動到達まで）は消えない。消える行を作らない
+ *   - 数字の行は min-height を持つ（字の大きさが変わっても高さは同じ）
+ *   - 差し迫ったときの余白は常に確保しておき、地の色だけを変える
+ */
+.estimate__arrival {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  /* 差し迫ったときに地を赤で塗るぶんの余白を、常に確保しておく */
+  margin: -8px 0;
+  padding: 6px 12px;
+  /*
+   * **幅を固定する。** 桁が減るたびに幅が動くと、
+   * 中央寄せのHUD全体が毎秒左右に揺れる。「100.0秒」が収まる幅。
+   */
+  width: 232px;
+}
+
+.estimate__arrival-label {
+  font-size: 12px;
+  color: var(--ink-weak);
+  letter-spacing: 0.04em;
+}
+
+.estimate__countdown {
+  display: flex;
+  /*
+   * 字の大きさが変わっても高さを変えない。数字の行の実寸（44px × 1.05）より
+   * 少し高くとって、どの状態でもこの高さで固定する。
+   * 中身は縦中央。
+   * 数字どうしの縦位置は内側の -num でベースラインに揃える。
+   */
+  align-items: center;
+  min-height: 48px;
+  gap: 3px;
+  font-weight: 700;
+  line-height: 1.05;
+  white-space: nowrap;
+}
+
+.estimate__countdown-num {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+}
+
+/* 整数部だけ大きく。小数部と添え字（あと・秒）は小さく */
+.estimate__countdown-sec,
+.estimate__countdown-frac {
+  font-family: var(--num);
+  font-style: italic;
+  letter-spacing: 0;
+}
+
+.estimate__countdown-sec {
+  font-size: 44px;
+}
+
+/*
+ * 0.1秒の位。整数部にくっつけて、大きさで従属だと分かるようにする
+ * （同じ大きさだと桁が増えて見え、数字が読みにくくなる）。
+ */
+.estimate__countdown-frac {
+  font-size: 24px;
+  margin-left: -1px;
+}
+
+.estimate__countdown-unit {
+  font-size: 15px;
+}
+
+/* 値が取れないとき（—）だけの文字。数字ではないので字数に合わせて落とす */
+.estimate__countdown-text {
+  font-size: 28px;
+}
+
+/*
+ * 差し迫っているあいだ。**赤い字ではなく地の色を反転させる。**
+ * 警報のカードは地色が赤に寄っていてストライプも赤いので、
+ * 赤い字を足しても、いちばん動きのある値が埋もれる。
+ * 余白は常に取ってあるので、ここで足すのは色だけ（高さが動かない）。
+ */
+.estimate__arrival--imminent {
+  background: #ff2800;
+}
+
+/* HUDでは数字をもう一段大きく（下中央に置くので余裕がある） */
+.estimate__countdown {
+  min-height: 56px;
+}
+
+.estimate__countdown-sec {
+  font-size: 54px;
+  /*
+   * 3桁ぶんの場所を空けて右詰め。桁が変わっても
+   * 小数部と「秒」の位置が動かない（数字は等幅の tabular figures）。
+   */
+  min-width: 3ch;
+  text-align: right;
+  /*
+   * 桁ごとの幅を揃える（等幅数字）。body で指定してあるが、ここは
+   * **ずれると「秒」の位置が動く**ので明示しておく。1ch = 数字1文字ぶん。
+   */
+  font-variant-numeric: tabular-nums;
+}
+
+.estimate__countdown-frac {
+  font-size: 28px;
+}
+
+.estimate__countdown-text {
+  font-size: 32px;
+}
+
+.estimate__arrival-label {
+  font-size: 13px;
+}
+
+.estimate__arrival--imminent .estimate__countdown,
+.estimate__arrival--imminent .estimate__arrival-label {
+  color: #ffffff;
+}
+
+.estimate__arrival--none {
+  /* 数字が出ないときも同じ高さを取る（枠が伸び縮みしない） */
+  justify-content: center;
+  min-height: 64px;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+/* ---- 現在地の設定 ---- */
+
+.setup {
+  position: absolute;
+  left: 50%;
+  top: 24px;
+  transform: translateX(-50%);
+  width: min(420px, calc(100vw - 32px));
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--rule-strong);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  z-index: 20;
+}
+
+.setup__title {
+  margin: 0 0 8px;
+  font-size: 17px;
+}
+
+.setup__lead {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: var(--ink-weak);
+  line-height: 1.5;
+}
+
+.setup__buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setup__btn {
+  padding: 7px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.setup__btn:hover {
+  border-color: var(--ink-weak);
+}
+
+.setup__btn--quiet {
+  color: var(--ink-faint);
+}
+
+.setup__status:not(:empty) {
+  margin: 10px 0 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-weak);
+}
+
+/* 地図をクリックして地点を選んでいる間 */
+.map--picking {
+  cursor: crosshair;
+}
+
+.app--picking .main__map {
+  outline: 2px solid var(--ink-weak);
+  outline-offset: -2px;
+}
+
+/* ---- 時計（詳細を出していないときの定位置） ---- */
+
+.clock {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--rule);
+}
+
+.clock__main {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.clock__time {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.clock__zone {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ink-faint);
+  letter-spacing: 0.08em;
+}
+
+.clock__date {
+  font-size: 15px;
+  color: var(--ink-weak);
+}
+
+/* ---- 右下のステータス ---- */
+
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--rule-strong);
+  background: var(--panel-2);
+}
+
+.statusbar .compact {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ---- 常時見えている最小の状態表示 ---- */
+
+.compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-weak);
+  font-family: var(--mono);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.compact:hover {
+  border-color: var(--ink-weak);
+  color: var(--ink);
+}
+
+.compact__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex: none;
+}
+
+/* 異常時だけ文字が出る。平常時は点だけ */
+.compact__text:empty {
+  display: none;
+}
+
+.compact--bad {
+  border-color: var(--bad);
+  color: var(--bad);
+  font-weight: 700;
+}
+
+.compact--bad .compact__dot {
+  background: var(--bad);
+}
+
+/*
+ * 津波の判定がまだ出ていないことを示す。EEWの列の先頭に固定する。
+ * 「発表はありません」とは書かないし、時間で勝手に消しもしない。
+ */
+.pending {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--panel-2);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* 右上の設定ボタン */
+.settings-button {
+  flex: none;
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-weak);
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+}
+
+.settings-button:hover,
+.settings-button--open {
+  border-color: var(--ink-weak);
+  color: var(--ink);
+}
+
+/* 試験用の電文を投入している間は、画面の縁で分かるようにする */
+.app--test .main__map {
+  outline: 2px dashed var(--ink-faint);
+  outline-offset: -2px;
+}
+
+/* ---- 本体 ---- */
+
+.main {
+  display: grid;
+  /*
+   * 右の列は 360px。一覧の行は「震度・震源名・M・深さ・時刻」で、
+   * 実測でいちばん長い組み合わせでも収まる幅（420pxでは深さと時刻の間が空いていた）。
+   */
+  grid-template-columns: 1fr 360px;
+  min-height: 0;
+}
+
+/*
+ * 開くのは津波の列だけ。**EEWでは列を開かない**（地図に重ねる）。
+ * 受信のたびに地図の幅が変わると、再投影で震源の位置が画面上で飛ぶ。
+ */
+.app--tsunami .main {
+  grid-template-columns: 1fr 360px 360px;
+}
+
+.main__tsunami {
+  display: none;
+  min-height: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--rule);
+  border-left: 1px solid var(--rule-strong);
+}
+
+.app--tsunami .main__tsunami {
+  display: block;
+}
+
+/* 列に出したときは、地震情報と同じ高さいっぱいを使う */
+.main__tsunami .panel {
+  height: 100%;
+  border-bottom: 0;
+}
+
+.main__tsunami .panel__title {
+  color: var(--ink);
+}
+
+.main__tsunami .panel__body {
+  padding: 8px;
+}
+
+.main__map {
+  position: relative;
+  border-right: 1px solid var(--rule);
+  min-height: 0;
+  background: var(--sea);
+}
+
+.main__side {
+  display: grid;
+  /*
+   * 一覧が伸びて、詳細は中身なりの高さ。
+   * 行数を子の数に合わせて数えると、子が増減したときに
+   * 詳細が画面外へ押し出される。minmax(0,1fr) で一覧側だけを可変にする。
+   */
+  grid-template-rows: minmax(0, 1fr) auto auto auto;
+  min-height: 0;
+  background: var(--panel);
+}
+
+.main__side > .panel {
+  min-height: 0;
+}
+
+/* ---- 地図 ---- */
+
+.map {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.map__svg,
+.map__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.map__canvas {
+  pointer-events: none;
+}
+
+.map__land path {
+  fill: var(--land);
+  stroke: var(--land-line);
+  stroke-width: 0.8;
+  /* 拡大しても線が太らない */
+  vector-effect: non-scaling-stroke;
+}
+
+.map__label {
+  font-family: var(--num);
+  font-weight: 700;
+  font-style: italic;
+}
+
+.map__points circle {
+  stroke: rgba(0, 0, 0, 0.6);
+  stroke-width: 0.5;
+  vector-effect: non-scaling-stroke;
+}
+
+/*
+ * 予報円。P波は線だけ、S波は線と半透明の塗り。
+ * 震央距離（地表に沿った距離）なので、投影平面の真円ではなく測地線円。
+ */
+.map__waves path {
+  vector-effect: non-scaling-stroke;
+}
+
+.wave__p {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  opacity: 0.75;
+}
+
+.wave__s {
+  fill: rgba(255, 90, 77, 0.14);
+  stroke: var(--bad);
+  stroke-width: 2;
+}
+
+/*
+ * S波が震央直上に出てくるまでの進み具合。
+ *
+ * 深い地震では発震から数十秒、円が1つも出ない。何も無いと
+ * 「まだ何も起きていない」と読めるので、震央の印のまわりで待ちを示す。
+ * 色はS波の予報円と同じ赤。リングが一周した瞬間にその円が出る。
+ */
+/*
+ * **non-scaling-stroke は使えない。**
+ * これを付けると破線の刻み（stroke-dasharray）まで画面座標で解釈され、
+ * 一周ぶんに指定した長さが円周と合わなくなって、円の全周に赤い破片が散る。
+ * 線の太さは waves.ts 側で倍率を掛けて、座標系の値として渡す。
+ */
+.wave__ring-track,
+.wave__ring {
+  fill: none;
+}
+
+/*
+ * 溝。ここまで進む、という残りの長さを示すだけなので、進んだ分と
+ * はっきり差が付く明るさにする（同じ白で近い明るさだと、どこまで進んだか読めない）。
+ */
+.wave__ring-track {
+  stroke: var(--ink);
+  opacity: 0.12;
+}
+
+.wave__ring {
+  stroke: var(--bad);
+  stroke-linecap: butt;
+}
+
+.map__epicenter line {
+  stroke: var(--bad);
+  stroke-width: 5;
+  vector-effect: non-scaling-stroke;
+  /* 平常時は控えめに。EEW受信中に濃くする */
+  opacity: 0.5;
+}
+
+/*
+ * EEW受信中の震央は滑らかに点滅させる。
+ * PLUM法のように震央が曖昧な報も含めて、進行中であることと
+ * 「この位置は確定ではない」ことを、点ではなく動きで示す。
+ */
+.map__epicenter--alert line {
+  opacity: 1;
+  stroke-width: 7;
+  animation: epicenter-pulse 1.4s ease-in-out infinite;
+}
+
+/*
+ * PLUM法の震央。震源を決める手法ではないので×印は出さず、
+ * 「このあたりで揺れている」ことだけを示す円にする。
+ *
+ * 線は1本。重ねると同心円に見えて「複数の何か」と読めてしまう。
+ * 光り方はにじみ（drop-shadow）で作る。
+ */
+.map__epicenter--plum circle {
+  fill: rgba(232, 234, 237, 0.07);
+  stroke: var(--ink);
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 4px rgba(232, 234, 237, 0.55));
+}
+
+.map__epicenter--plum.map__epicenter--alert circle {
+  animation: epicenter-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes epicenter-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.map__epicenter--outside line {
+  stroke-dasharray: 6 5;
+}
+
+.map__outside,
+.map__reset {
+  position: absolute;
+  padding: 4px 8px;
+  background: rgba(12, 14, 17, 0.88);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-weak);
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.map__outside {
+  left: 12px;
+  bottom: 12px;
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.map__reset {
+  right: 12px;
+  top: 12px;
+  cursor: pointer;
+}
+
+.map__reset:hover {
+  color: var(--ink);
+  border-color: var(--ink-weak);
+}
+
+/* ---- パネル ---- */
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.panel__title {
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 13px;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+  color: var(--ink-faint);
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--rule);
+}
+
+
+.panel__body {
+  padding: 8px 12px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.panel--list .panel__body {
+  padding: 0;
+}
+
+.panel--detail {
+  /* 一覧に押し潰されない。中身が多いときはこの中で送る */
+  border-top: 1px solid var(--rule-strong);
+  border-bottom: 0;
+}
+
+.panel--detail .panel__body {
+  max-height: 32vh;
+  min-height: 60px;
+}
+
+/* ---- 津波 ---- */
+
+/*
+ * 一番大きく出すのは高さと到達時刻。判断を決めるのはこの2つで、
+ * 区域名と階級名はその手がかり。
+ *
+ * 背景は気象庁の津波警報等の配色をそのまま塗る。薄めない。
+ *   大津波警報 紫 / 津波警報 赤 / 津波注意報 黄
+ */
+
+.tsunami__waiting {
+  margin: 0;
+  font-weight: 700;
+}
+
+.tsunami__none {
+  margin: 0;
+  color: var(--ink-faint);
+}
+
+.tsunami__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tsunami__area {
+  padding: 8px 10px 10px;
+  /* 階級ごとの色で塗る。既定は不明な階級用 */
+  background: var(--rule-strong);
+  color: var(--ink);
+}
+
+.tsunami__area--MajorWarning {
+  background: #c800ff;
+  color: #ffffff;
+}
+
+.tsunami__area--Warning {
+  background: #ff2800;
+  color: #ffffff;
+}
+
+.tsunami__area--Watch {
+  background: #faf500;
+  color: #14161a;
+}
+
+.tsunami__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+.tsunami__name {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.tsunami__grade {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+.tsunami__main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tsunami__height {
+  font-size: 34px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.tsunami__arrival {
+  font-size: 20px;
+  font-weight: 700;
+  text-align: right;
+  line-height: 1.2;
+}
+
+.tsunami__time {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+/*
+ * 何をすべきか。列の最上部に、いちばん重い階級のものを出す。
+ * 階級の色をそのまま敷く。
+ */
+.tsunami__action {
+  padding: 12px;
+  margin-bottom: 8px;
+  background: var(--rule-strong);
+  color: var(--ink);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tsunami__action--MajorWarning {
+  background: #c800ff;
+  color: #ffffff;
+}
+
+.tsunami__action--Warning {
+  background: #ff2800;
+  color: #ffffff;
+}
+
+.tsunami__action--Watch {
+  background: #faf500;
+  color: #14161a;
+}
+
+.tsunami__action-text {
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.tsunami__action-grade {
+  font-size: 14px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+/* ---- 一覧 ---- */
+
+.row {
+  display: grid;
+  grid-template-columns: 50px 1fr auto;
+  align-items: stretch;
+  gap: 0 10px;
+  width: 100%;
+  padding: 7px 12px 7px 0;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  text-align: left;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--panel-2);
+}
+
+.row--selected {
+  background: var(--panel-2);
+}
+
+/* 一番上が最新。見出しの代わりにこの行を大きくする */
+.row--first {
+  /* 先頭の行は震度の箱も大きい。列数は他の行と同じに保つ */
+  grid-template-columns: 62px 1fr auto;
+  padding: 11px 12px 11px 0;
+}
+
+/* 上下の行の色と隙間なく続くよう、行の余白と区切り線のぶんを食う */
+.row--first .row__intensity {
+  margin: -11px 0 -12px;
+}
+
+.row--first .row__intensity {
+  font-size: 32px;
+}
+
+.row--first .row__place {
+  /*
+   * 17px。18pxだと「熊本県天草・芦北地方」（10字）が360pxの列で入らず、
+   * いちばん読む先頭の行の震源名が省略されてしまう
+   */
+  font-size: 17px;
+}
+
+.row--first .row__meta,
+.row--first .row__time {
+  font-size: 14px;
+}
+
+/*
+ * マグニチュードと深さは、間隔ではなく縦線で区切る。
+ * 列幅を固定して、上下の行で線の位置が揃うようにする。
+ */
+.row__meta {
+  display: grid;
+  /* 2列だけ。列幅を固定して、上下の行で区切り線の位置を揃える */
+  grid-template-columns: 62px 100px;
+  align-items: baseline;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.row__field {
+  /* 「深さ700km」で折り返させない。列幅で足りるようにする */
+  white-space: nowrap;
+}
+
+.row__field + .row__field {
+  border-left: 1px solid #ffffff;
+  padding-left: 8px;
+}
+
+.row--first .row__meta {
+  font-size: 16px;
+  /* 字が大きいぶん列も広げる（3桁の深さが入る幅） */
+  grid-template-columns: 66px 108px;
+}
+
+/* 震度色は白背景前提の色。暗い縁で背景から切り離す */
+.row__intensity,
+.chip__intensity {
+  border: 1px solid rgba(0, 0, 0, 0.55);
+}
+
+/*
+ * 震度の箱は色べた。行の高さいっぱいで、上下の行の色と隙間なく続く
+ * （行の上下余白と区切り線のぶんを負のマージンで食う）。
+ */
+.row__intensity {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: -7px 0 -8px;
+  font-size: 25px;
+  border: 0;
+}
+
+/*
+ * 「5弱以上」（震度速報の第一報。scale 46）だけ添え字が付いて横に伸びる。
+ * 箱の幅は全行で揃えたい（揃えないと下の M・深さ の区切り線が行ごとにずれる）ので、
+ * この添え字だけ小さく詰める。**消さない**——「5弱」と「5弱以上」は別の情報。
+ */
+.row__intensity .int__note {
+  font-size: 10px;
+  margin-left: 0.1em;
+  /* 「以上」を縦に折り返させない（箱の中で2行になって窮屈に見える） */
+  white-space: nowrap;
+}
+
+.row__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/*
+ * 津波の印。**日本語で出す**。色は津波の階級の色に合わせるが、
+ * 面ではなく文字色だけ（震度の箱と色の面で競合させない）。
+ */
+.row__tsunami {
+  flex: none;
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.row__tsunami--major {
+  color: #e57bff;
+}
+
+.row__tsunami--warning {
+  color: var(--bad);
+}
+
+.row__tsunami--watch {
+  color: #faf500;
+}
+
+.row__tsunami--quiet {
+  color: var(--ink-weak);
+}
+
+.row__body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.row__place {
+  font-weight: 700;
+  /* 長いときは津波の印を残して名前を詰める（名前は詳細にも出る） */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row__time {
+  align-self: center;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+.list__empty {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--ink-faint);
+}
+
+/* ---- 詳細 ---- */
+
+.detail__head {
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.detail__reports,
+.detail__kind,
+.detail__more {
+  margin: 0 0 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--rule);
+  padding: 1px 5px 1px 1px;
+  font-size: 13px;
+  color: var(--ink-weak);
+}
+
+.chip__intensity {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 19px;
+  font-size: 15px;
+}
+
+/* ---- 設定 ---- */
+
+/*
+ * **設定画面は素のHTMLのまま出す。**
+ *
+ * ここは平常時に開いて読むだけの画面で、緊急時の視認性とは関係が無い。
+ * 見出し・箇条書き・チェックボックス・ボタンを、ブラウザ既定の見た目のまま使う。
+ * 作り込むと、直すたびに本体の計器と二重に手が要る。
+ *
+ * このアプリ側の指定（暗色・独自フォント・font-variant-numeric・button の font 継承）を
+ * 打ち消して、白地の素の文書に戻す。位置と大きさだけこちらで決める。
+ */
+.settings {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  width: 420px;
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
+  z-index: 10;
+  padding: 0 16px 16px;
+  background: #ffffff;
+  color: #000000;
+  border: 1px solid #000000;
+  /*
+   * 明色に戻す。:root の color-scheme: dark のままだと、
+   * ボタンもチェックボックスもOSの暗色版で描かれて「素のHTML」にならない。
+   */
+  color-scheme: light;
+  /* 素の文書に戻す */
+  font-family: revert;
+  font-size: revert;
+  line-height: revert;
+  letter-spacing: normal;
+  font-variant-numeric: normal;
+}
+
+.settings button,
+.settings input,
+.settings label {
+  font: revert;
+  color: revert;
+  letter-spacing: normal;
+}
+
+/* 状態の強調だけは残す（読み飛ばすと困るので太字にする） */
+.settings__value--warn,
+.settings__degraded:not(:empty) {
+  font-weight: 700;
+}
+
+.settings__degraded:empty {
+  display: none;
+}
+
+@media (max-width: 1200px) {
+  .app--tsunami .main {
+    grid-template-columns: 1fr 280px 320px;
+  }
+}
+
+@media (max-width: 900px) {
+  .main {
+    grid-template-columns: 1fr 300px;
+  }
+
+  .settings {
+    width: min(340px, calc(100vw - 32px));
+  }
+}

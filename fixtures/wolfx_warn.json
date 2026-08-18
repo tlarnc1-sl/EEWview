@@ -1,0 +1,38 @@
+{
+    "Title": "緊急地震速報（警報）",
+    "CodeType": "Ｍ、最大予測震度及び主要動到達予測時刻の緊急地震速報",
+    "Issue": { "Source": "東京", "Status": "通常" },
+    "EventID": "20260401100625",
+    "Serial": 12,
+    "AnnouncedTime": "2026/04/01 10:07:13",
+    "OriginTime": "2026/04/01 10:06:17",
+    "Hypocenter": "茨城県南部",
+    "Latitude": 36.1,
+    "Longitude": 140,
+    "Magunitude": 5.1,
+    "Depth": 60,
+    "MaxIntensity": "5弱",
+    "Accuracy": {
+        "Epicenter": "IPF 法（5 点以上）",
+        "Depth": "IPF 法（5 点以上）",
+        "Magnitude": "全点全相"
+    },
+    "MaxIntChange": { "String": "ほとんど変化なし", "Reason": "不明、未設定時、キャンセル時" },
+    "WarnArea": [
+        { "Chiiki": "栃木県南部", "Shindo1": "5弱", "Shindo2": "5弱", "Time": "100639", "Type": "警報", "Arrive": "主要動到達時刻の予測なし（PLUM 法による予測）" },
+        { "Chiiki": "茨城県北部", "Shindo1": "5弱", "Shindo2": "5弱", "Time": "100639", "Type": "警報", "Arrive": "主要動到達時刻の予測なし（PLUM 法による予測）" },
+        { "Chiiki": "茨城県南部", "Shindo1": "5弱", "Shindo2": "5弱", "Time": "100639", "Type": "警報", "Arrive": "主要動到達時刻の予測なし（PLUM 法による予測）" },
+        { "Chiiki": "埼玉県南部", "Shindo1": "4", "Shindo2": "4", "Time": "//////", "Type": "警報", "Arrive": "既に到達と予測" },
+        { "Chiiki": "千葉県北西部", "Shindo1": "4", "Shindo2": "4", "Time": "//////", "Type": "警報", "Arrive": "既に到達と予測" },
+        { "Chiiki": "埼玉県北部", "Shindo1": "4", "Shindo2": "3", "Time": "//////", "Type": "警報", "Arrive": "既に到達と予測" },
+        { "Chiiki": "群馬県南部", "Shindo1": "4", "Shindo2": "4", "Time": "100637", "Type": "警報", "Arrive": "主要動到達時刻の予測なし（PLUM 法による予測）" }
+    ],
+    "isSea": false,
+    "isTraining": false,
+    "isAssumption": false,
+    "isWarn": true,
+    "isFinal": true,
+    "isCancel": false,
+    "OriginalText": "37 03 00 260401100713 C11 260401100617 ND20260401100625 NCN912 JD////////////// JN/// 301 N361 E1400 060 51 5- RK44559 RT01/// RC0//// EBI 311 S5-5- 100639 19 300 S5-5- 100639 19 301 S5-5- 100639 19 331 S0404 ////// 11 341 S0404 ////// 11 330 S0403 ////// 11 321 S0404 100637 19 9999=",
+    "Pond": "127"
+}

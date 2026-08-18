@@ -1,0 +1,23 @@
+{
+  "name": "eewview",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "build:map": "python3 tools/build-map.py /tmp/japan.geojson src/ui/japan.json",
+    "build:stations": "python3 tools/build-stations.py JMAstations.json src/ui/stations.json"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0",
+    "vitest": "^2.1.0"
+  }
+}
